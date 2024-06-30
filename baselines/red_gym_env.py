@@ -68,6 +68,10 @@ class RedGymEnv(Env):
         self.prev_map_n = 40
         self.same_map_step = 0
         self.max_distance = 0
+        self.saved_distance = 0
+        self.aversion_point_active = False
+        self.aversion_point = {}
+        self.prev_coord_string = ''
 
         # Set this in SOME subclasses
         self.metadata = {"render.modes": []}
@@ -187,6 +191,10 @@ class RedGymEnv(Env):
         self.prev_map_n = 40
         self.same_map_step = 0
         self.max_distance = 0
+        self.saved_distance = 0
+        self.aversion_point_active = False
+        self.aversion_point = {}
+        self.prev_coord_string = ''
 
     def init_knn(self):
         # Declaring index
@@ -265,9 +273,15 @@ class RedGymEnv(Env):
         # more updates for what we know about the game state
         self.last_health = self.read_hp_fraction()
 
-        # self.recent_coords.append(coord_string)
-        # if (len(self.recent_coords) > 20):
-        #    self.recent_coords = self.recent_coords[1:]
+
+        x_pos = self.read_m(X_POS_ADDRESS)
+        y_pos = self.read_m(Y_POS_ADDRESS)
+        map_n = self.read_m(MAP_N_ADDRESS)
+        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+
+        self.recent_coords.append(coord_string)
+        if (len(self.recent_coords) > 10):
+            self.recent_coords = self.recent_coords[1:]
 
         # shift over short term reward memory
         # short term reward memory is used in the render() function for observation
@@ -372,8 +386,21 @@ class RedGymEnv(Env):
 
         # prev_num_coords = len(self.seen_coords)
 
-        self.seen_coords[coord_string] = self.step_count
+        if coord_string in self.seen_coords:
+            if self.prev_coord_string != coord_string:
+                self.seen_coords[coord_string] = self.seen_coords[coord_string] + 1
+        else:
+            self.seen_coords[coord_string] = 1
+
+        prev_maps_len = len(self.seen_maps)
         self.seen_maps[map_n] = self.step_count
+
+        if prev_maps_len < len(self.seen_maps) and map_n not in [37, 38, 39]:
+            print('new map')
+            self.aversion_point_active = True
+            self.aversion_point['x'] = x_pos
+            self.aversion_point['y'] = y_pos
+            self.saved_distance = self.max_distance
 
         # count number of times a coord is stepped on
         # once it is over a threshold
@@ -545,8 +572,8 @@ class RedGymEnv(Env):
             base = cur_size * self.base_explore_reward
             post = 0
 
-        base = 0 # disable
-        post = 0 # disable
+        #base = 0 # disable
+        #post = 0 # disable
 
         chain = self.new_coord_chain * 0.001 * 0 # disabled
         maps = (len(self.seen_maps) - 1)
@@ -558,20 +585,20 @@ class RedGymEnv(Env):
         x_pos = self.read_m(X_POS_ADDRESS)
         y_pos = self.read_m(Y_POS_ADDRESS)
 
+        distance_from_start = 0
 
-        if map_n == 40:
-            distance_from_start = sqrt((x_pos - 5)**2 + (y_pos - 4)**2) * 0.01
-        else:
-            distance_from_start = sqrt((x_pos - 18)**2 + (y_pos - 16)**2) * 0.01
+        if self.aversion_point_active:
+            distance_from_start = sqrt((x_pos - self.aversion_point['x'])**2 + (y_pos - self.aversion_point['y'])**2) * 0.01
+            self.max_distance = max(self.max_distance, distance_from_start)
 
-        self.max_distance = max(self.max_distance, distance_from_start)
+        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
 
-        # coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+        if coord_string in self.recent_coords and self.prev_coord_string != coord_string:
+            self.stuck_penalty += 1
 
-        # if coord_string in self.recent_coords and self.read_m(BATTLE_TURN_ADDRESS) == 0:
-        #    self.stuck_penalty += 1 * 0 # disabled
+        self.prev_coord_string = coord_string
 
-        return base + post + maps + self.max_distance - (self.stuck_penalty * 0.0001) #- self.map_penalty
+        return base + post + maps + self.max_distance + self.saved_distance # - (self.stuck_penalty * 0.0001) #- self.map_penalty
 
     def get_battles_reward(self):
         battle_turn = self.read_m(BATTLE_TURN_ADDRESS)
